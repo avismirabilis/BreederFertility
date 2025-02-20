@@ -1,3 +1,8 @@
+### Author: Giri Athrey
+### Texas A&M University
+### Updated Feburary 2025
+
+
 
 # Install necessary packages
 if (!requireNamespace("rstanarm", quietly = TRUE)) {

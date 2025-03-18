@@ -1,0 +1,91 @@
+# Load the rstanarm library for Bayesian regression
+library(rstanarm)
+library(ggplot2)
+library(NatParksPalettes)
+
+# Load NASS data
+data <- read.csv("NASS_data_hatchability.csv")
+
+## Now we create a composite index called BBPI (Broiler Breeder Performance Index) using PCA-based weighting
+
+# Standardize performance metrics
+data$normalized_hatchability <- scale(data$Hatchability, center = TRUE, scale = TRUE)
+data$normalized_livability   <- scale(data$Livability, center = TRUE, scale = TRUE)
+data$normalized_efficiency   <- scale(data$Production_efficiency, center = TRUE, scale = TRUE)
+data$normalized_eggs_set     <- scale(data$Broiler_eggs_set, center = TRUE, scale = TRUE)
+
+# Combine standardized metrics into a data frame
+performance_data <- data.frame(
+  hatchability = data$normalized_hatchability,
+  livability   = data$normalized_livability,
+  efficiency   = data$normalized_efficiency,
+  eggs_set     = data$normalized_eggs_set
+)
+
+# Perform PCA on the performance data (no additional centering/scaling required)
+pca_performance <- prcomp(performance_data, center = FALSE, scale. = FALSE)
+
+# Use the first principal component scores as the composite index
+data$BBPI <- -1 * pca_performance$x[, 1]
+
+# Bayesian model for BBPI using normal priors
+model_bayes_bbpi <- stan_glm(BBPI ~ year, data = data,
+                             family = gaussian,
+                             prior = normal(0, 10, autoscale = TRUE),
+                             prior_intercept = normal(0, 10, autoscale = TRUE),
+                             chains = 20, iter = 20000, seed = 123)
+
+# Predict future values using the primary BBPI model
+future_years <- data.frame(year = (max(data$year) + 1):2050)
+predictions_bbpi <- posterior_predict(model_bayes_bbpi, newdata = future_years)
+
+# Bayesian model for BBPI using Cauchy priors for comparison
+model_bayes_bbpi_alt <- stan_glm(BBPI ~ year, data = data,
+                                 family = gaussian,
+                                 prior = cauchy(0, 2.5, autoscale = TRUE),
+                                 prior_intercept = cauchy(0, 2.5, autoscale = TRUE),
+                                 chains = 20, iter = 20000, seed = 123)
+predictions_bbpi_alt <- posterior_predict(model_bayes_bbpi_alt, newdata = future_years)
+
+# Concordance check: Compute and plot mean predictions from both models
+predicted_means <- apply(predictions_bbpi, 2, mean)
+predicted_means_alt <- apply(predictions_bbpi_alt, 2, mean)
+plot(future_years$year, predicted_means, type = 'l', col = 'blue',
+     ylim = range(c(predicted_means, predicted_means_alt)),
+     xlab = "Year", ylab = "Predicted BBPI",
+     main = "Concordance Check: PCA-Based BBPI Predictions")
+lines(future_years$year, predicted_means_alt, col = 'red')
+legend("topright", legend = c("BBPI Gaussian", "BBPI Cauchy"),
+       col = c("blue", "red"), lty = 1)
+
+# Calculate credible intervals for the primary BBPI model predictions
+mean_predictions_bbpi <- apply(predictions_bbpi, 2, mean)
+ci_bbpi <- apply(predictions_bbpi, 2, quantile, probs = c(0.025, 0.975))
+ci_df_bbpi <- as.data.frame(t(ci_bbpi))
+names(ci_df_bbpi) <- c("Lower", "Upper")
+ci_df_bbpi$Year <- future_years$year
+ci_df_bbpi$Mean <- mean_predictions_bbpi
+
+# Calculate credible intervals for the alternative BBPI model predictions
+mean_predictions_bbpi_alt <- apply(predictions_bbpi_alt, 2, mean)
+ci_bbpi_alt <- apply(predictions_bbpi_alt, 2, quantile, probs = c(0.025, 0.975))
+ci_df_bbpi_alt <- as.data.frame(t(ci_bbpi_alt))
+names(ci_df_bbpi_alt) <- c("Lower", "Upper")
+ci_df_bbpi_alt$Year <- future_years$year
+ci_df_bbpi_alt$Mean <- mean_predictions_bbpi_alt
+
+# Visualize predictions and credible intervals using ggplot2
+p <- ggplot() + 
+  geom_line(data = ci_df_bbpi, aes(x = Year, y = Mean, color = "BBPI Gaussian"), size = 1) +
+  geom_line(data = ci_df_bbpi_alt, aes(x = Year, y = Mean, color = "BBPI Cauchy"), size = 1) +
+  scale_color_manual(values = natparks.pals("Saguaro", 2)) +
+  labs(title = "Broiler Breeder Performance Index (PCA-Based Weighting)",
+       x = "Year", y = "Predicted BBPI") +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+
+p <- p + geom_ribbon(data = ci_df_bbpi, aes(x = Year, ymin = Lower, ymax = Upper, fill = "BBPI Gaussian"), alpha = 0.1) +
+  geom_ribbon(data = ci_df_bbpi_alt, aes(x = Year, ymin = Lower, ymax = Upper, fill = "BBPI Cauchy"), alpha = 0.1) +
+  scale_fill_manual(values = natparks.pals("Yellowstone", 2))
+
+print(p)
